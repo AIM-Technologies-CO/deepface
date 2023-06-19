@@ -615,6 +615,7 @@ def represent(
     detector_backend="opencv",
     align=True,
     normalization="base",
+    verbose = 0
 ):
 
     """
@@ -653,6 +654,7 @@ def represent(
     # we have run pre-process in verification. so, this can be skipped if it is coming from verify.
     target_size = functions.find_target_size(model_name=model_name)
     if detector_backend != "skip":
+        tic = time.time()
         img_objs = functions.extract_faces(
             img=img_path,
             target_size=target_size,
@@ -661,6 +663,9 @@ def represent(
             enforce_detection=enforce_detection,
             align=align,
         )
+        toc = time.time()
+        if verbose == 0 or verbose == 1:
+            print(f"[Logging] Face detection of {detector_backend} detector ran successfully in {round(toc - tic, 2)} s")
     else:  # skip
         if isinstance(img_path, str):
             img = functions.load_image(img_path)
@@ -678,7 +683,88 @@ def represent(
         img_region = [0, 0, img.shape[1], img.shape[0]]
         img_objs = [(img, img_region, 0)]
     # ---------------------------------
+    for img, region, confidence in img_objs:
+        # custom normalization
+        img = functions.normalize_input(img=img, normalization=normalization)
 
+        # represent
+        tic = time.time()
+        if "keras" in str(type(model)):
+            # new tf versions show progress bar and it is annoying
+            embedding = model.predict(img, verbose=0)[0].tolist()
+        else:
+            # SFace and Dlib are not keras models and no verbose arguments
+            embedding = model.predict(img)[0].tolist()
+        toc = time.time()
+        if verbose == 1:
+            print(f"[Logging] Extracting face embedding of {model_name} ran successfully in {round(toc - tic, 2)} s")
+
+        resp_obj = {}
+        resp_obj["embedding"] = embedding
+        resp_obj["facial_area"] = region
+        resp_obj["face_confidence"] = confidence
+        resp_objs.append(resp_obj)
+    return resp_objs
+
+
+def represent_batch(
+    img_path_list,
+    model_name="VGG-Face",
+    enforce_detection=True,
+    detector_backend="retinaface",
+    align=True,
+    normalization="base",
+    verbose= 0 
+):
+
+    """
+    This function represents facial images as vectors. The function uses convolutional neural
+    networks models to generate vector embeddings.
+
+    Parameters:
+            img_path (string): exact image path. Alternatively, numpy array (BGR) or based64
+            encoded images could be passed. Source image can have many faces. Then, result will
+            be the size of number of faces appearing in the source image.
+
+            model_name (string): VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, DeepID, Dlib,
+            ArcFace, SFace
+
+            enforce_detection (boolean): If no face could not be detected in an image, then this
+            function will return exception by default. Set this to False not to have this exception.
+            This might be convenient for low resolution images.
+
+            detector_backend (string): set face detector backend to retinaface
+
+            align (boolean): alignment according to the eye positions.
+
+            normalization (string): normalize the input image before feeding to model
+
+    Returns:
+            Represent function returns a list of object with multidimensional vector (embedding).
+            The number of dimensions is changing based on the reference model.
+            E.g. FaceNet returns 128 dimensional vector; VGG-Face returns 2622 dimensional vector.
+    """
+    resp_objs = []
+
+    model = build_model(model_name)
+
+    # ---------------------------------
+    # we have run pre-process in verification. so, this can be skipped if it is coming from verify.
+    target_size = functions.find_target_size(model_name=model_name)
+    tic = time.time()
+    img_objs_list = functions.extract_batch_faces(
+        img_path_list=img_path_list,
+        target_size=target_size,
+        detector_backend=detector_backend,
+        grayscale=False,
+        enforce_detection=enforce_detection,
+        align=align,
+    )
+    toc = time.time()
+    if verbose == 0:
+        print(f"[Logging] Face detection of {detector_backend} detector ran successfully on a batch size of {len(img_path_list)} in {round(toc - tic, 2)} s")
+    # ---------------------------------
+    # Prepare face batches ------------
     for img, region, confidence in img_objs:
         # custom normalization
         img = functions.normalize_input(img=img, normalization=normalization)
@@ -696,8 +782,8 @@ def represent(
         resp_obj["facial_area"] = region
         resp_obj["face_confidence"] = confidence
         resp_objs.append(resp_obj)
-
-    return resp_objs
+    
+    return 
 
 
 def stream(

@@ -1,3 +1,5 @@
+import cv2
+
 def build_model():
     from retinaface import RetinaFace  # this is not a must dependency
 
@@ -48,3 +50,49 @@ def detect_face(face_detector, img, align=True):
             resp.append((detected_face, img_region, confidence))
 
     return resp
+
+
+def detect_batch_face(face_detector, img_list, align=True):
+
+    from retinaface import RetinaFace  # this is not a must dependency
+    from retinaface.commons import postprocess
+
+    # ---------------------------------
+
+    resp_list = []
+
+    # --------------------------
+    inference_img_list = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in img_list]
+    obj_list = RetinaFace.detect_batch_faces(inference_img_list, model=face_detector, threshold=0.9)
+    for obj, img in zip(obj_list, img_list):
+        if isinstance(obj, dict):
+            resp = []
+            for face_idx in obj.keys():
+                identity = obj[face_idx]
+                facial_area = identity["facial_area"]
+
+                y = facial_area[1]
+                h = facial_area[3] - y
+                x = facial_area[0]
+                w = facial_area[2] - x
+                img_region = [x, y, w, h]
+                confidence = identity["score"]
+
+                # detected_face = img[int(y):int(y+h), int(x):int(x+w)] #opencv
+                detected_face = img[facial_area[1] : facial_area[3], facial_area[0] : facial_area[2]]
+
+                if align:
+                    landmarks = identity["landmarks"]
+                    left_eye = landmarks["left_eye"]
+                    right_eye = landmarks["right_eye"]
+                    nose = landmarks["nose"]
+                    # mouth_right = landmarks["mouth_right"]
+                    # mouth_left = landmarks["mouth_left"]
+
+                    detected_face = postprocess.alignment_procedure(
+                        detected_face, right_eye, left_eye, nose
+                    )
+
+                resp.append((detected_face, img_region, confidence))
+            resp_list.append(resp)
+    return resp_list

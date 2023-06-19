@@ -75,6 +75,22 @@ def detect_faces(face_detector, detector_backend, img, align=True):
         raise ValueError("invalid detector_backend passed - " + detector_backend)
 
 
+def detect_batch_faces(face_detector, detector_backend, img_list, align=True):
+
+    backends = {
+        "retinaface": RetinaFaceWrapper.detect_batch_face,
+    }
+
+    detect_face_fn = backends.get(detector_backend)
+
+    if detect_face_fn:  # pylint: disable=no-else-return
+        obj = detect_face_fn(face_detector, img_list, align)
+        # obj stores list of (detected_face, region, confidence)
+        return obj
+    else:
+        raise ValueError("invalid detector_backend passed - " + detector_backend)
+
+        
 def alignment_procedure(img, left_eye, right_eye):
 
     # this function aligns given face in img based on left and right eye coordinates
