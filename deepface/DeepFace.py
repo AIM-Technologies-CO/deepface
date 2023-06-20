@@ -709,12 +709,13 @@ def represent(
 
 def represent_batch(
     img_path_list,
-    model_name="VGG-Face",
+    model_name=["VGG-Face", "ArcFace"],
     enforce_detection=True,
     detector_backend="retinaface",
     align=True,
     normalization="base",
-    verbose= 0 
+    verbose= 0,
+    emb_batch_size = 32
 ):
 
     """
@@ -722,11 +723,9 @@ def represent_batch(
     networks models to generate vector embeddings.
 
     Parameters:
-            img_path (string): exact image path. Alternatively, numpy array (BGR) or based64
-            encoded images could be passed. Source image can have many faces. Then, result will
-            be the size of number of faces appearing in the source image.
+            img_path_list (list): list contains list of images path.
 
-            model_name (string): VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, DeepID, Dlib,
+            model_name (str or list): VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, DeepID, Dlib,
             ArcFace, SFace
 
             enforce_detection (boolean): If no face could not be detected in an image, then this
@@ -744,46 +743,120 @@ def represent_batch(
             The number of dimensions is changing based on the reference model.
             E.g. FaceNet returns 128 dimensional vector; VGG-Face returns 2622 dimensional vector.
     """
-    resp_objs = []
-
-    model = build_model(model_name)
-
+    response_list = []
+    # Init face batches ------------
+    for img_path in img_path_list:
+        response_list.append({img_path:{"face_region_list":[], "model_start_end_index":(), "is_empty": False}})
+        
+    if isinstance(model_name, str):
+        model = build_model(model_name)
+        face_img_list = []
+        target_size_obj= functions.find_target_size(model_name=model_name)
+        # Init face batches ------------
+        for i, img_path in enumerate(img_path_list):
+            response_list[i][img_path][f"{model_name}_face_img"] = []
+            response_list[i][img_path][f"{model_name}_emb_vec"] = []
+    elif isinstance(model_name, list):
+        model = {}
+        model_preds = {}
+        target_size_obj = {}
+        face_img_list = {}
+        for single_model_name in model_name:
+            model[single_model_name] = build_model(single_model_name)
+            model_preds[single_model_name] = None
+            target_size_obj[single_model_name] = functions.find_target_size(model_name=single_model_name)
+            face_img_list[single_model_name] = []
+            for i, img_path in enumerate(img_path_list):
+                response_list[i][img_path][f"{single_model_name}_face_img"] = []
+                response_list[i][img_path][f"{single_model_name}_emb_vec"] = []
     # ---------------------------------
-    # we have run pre-process in verification. so, this can be skipped if it is coming from verify.
-    target_size = functions.find_target_size(model_name=model_name)
     tic = time.time()
-    img_objs_list = functions.extract_batch_faces(
-        img_path_list=img_path_list,
-        target_size=target_size,
-        detector_backend=detector_backend,
-        grayscale=False,
-        enforce_detection=enforce_detection,
-        align=align,
-    )
+    if isinstance(model_name, str):
+        model_face_objs = functions.extract_batch_faces(
+            img_path_list=img_path_list,
+            target_size=target_size_obj,
+            detector_backend=detector_backend,
+            grayscale=False,
+            enforce_detection=enforce_detection,
+            align=align,
+        )
+    elif isinstance(model_name, list):
+        model_face_objs = functions.extract_multi_model_faces(
+            img_path_list=img_path_list,
+            target_size_obj=target_size_obj,
+            detector_backend=detector_backend,
+            grayscale=False,
+            enforce_detection=enforce_detection,
+            align=align,
+        )
     toc = time.time()
-    if verbose == 0:
+    if verbose == 0 or verbose == 1:
         print(f"[Logging] Face detection of {detector_backend} detector ran successfully on a batch size of {len(img_path_list)} in {round(toc - tic, 2)} s")
     # ---------------------------------
-    # Prepare face batches ------------
-    for img, region, confidence in img_objs:
-        # custom normalization
-        img = functions.normalize_input(img=img, normalization=normalization)
-
-        # represent
-        if "keras" in str(type(model)):
-            # new tf versions show progress bar and it is annoying
-            embedding = model.predict(img, verbose=0)[0].tolist()
+    # Organize the responselist -------
+    for i in range(len(img_path_list)):
+        #Check if there is no face 
+        if isinstance(model_name, list):
+            face_objs = model_face_objs[model_name[0]][i]
+            response_list[i][img_path_list[i]][f"face_region_list"] = [face_obj[1] for face_obj in face_objs]
+        elif isinstance(model_name, str):
+            face_objs = model_face_objs[i]
+            response_list[i][img_path_list[i]][f"face_region_list"] = [face_obj[1] for face_obj in face_objs]
+            
+        if len(face_objs) == 1 and face_objs[-1][-1] == 0:
+            response_list[i][img_path_list[i]]['is_empty'] = True
         else:
-            # SFace and Dlib are not keras models and no verbose arguments
-            embedding = model.predict(img)[0].tolist()
-
-        resp_obj = {}
-        resp_obj["embedding"] = embedding
-        resp_obj["facial_area"] = region
-        resp_obj["face_confidence"] = confidence
-        resp_objs.append(resp_obj)
-    
-    return 
+            if isinstance(model_name, list):
+                for single_model_name in model_name:
+                    face_objs = model_face_objs[single_model_name][i]
+                    response_list[i][img_path_list[i]]["model_start_end_index"] = (len(face_img_list[single_model_name]), (len(face_img_list[single_model_name]) + len(face_objs) - 1))
+                    for face_obj in face_objs:
+                        face_img_list[single_model_name].append(np.squeeze(face_obj[0], axis=0))
+                        response_list[i][img_path_list[i]][f"{single_model_name}_face_img"].append(face_obj[0])
+            if isinstance(model_name, str):
+                response_list[i][img_path_list[i]]["model_start_end_index"] = (len(face_img_list), (len(face_img_list) + len(face_objs) - 1))
+                for face_obj in face_objs:
+                    face_img_list.append(np.squeeze(face_obj[0], axis=0))
+                    response_list[i][img_path_list[i]][f"{model_name}_face_img"].append(face_obj[0])
+    # Prediction
+    tic = time.time()
+    total_number_of_faces = 0
+    if isinstance(model_name, str):
+        # Custom normalization 
+        face_img_list = [functions.normalize_input(img=img, normalization=normalization) for img in face_img_list]  
+        total_number_of_faces = len(face_img_list)
+        face_img_tensor = np.stack(face_img_list, axis=0)
+        model_preds = model.predict(face_img_tensor, batch_size=emb_batch_size, verbose=0)
+    elif isinstance(model_name, list):
+        for single_model_name, model in model.items():
+            # Custom normalization 
+            single_model_faces = [functions.normalize_input(img=img, normalization=normalization) for img in face_img_list[single_model_name]]   
+            total_number_of_faces = len(single_model_faces)
+            face_img_tensor = np.stack(single_model_faces, axis=0)
+            embedding_list = model.predict(face_img_tensor, batch_size=emb_batch_size, verbose=0)
+            model_preds[single_model_name] = embedding_list
+    toc = time.time()
+    if verbose == 1:
+        print(f"[Logging] Embedding Extraction of {model_name} model ran successfully on a batch size of {emb_batch_size} of {total_number_of_faces} faces in {round(toc - tic, 2)} s")
+    # Store the embeddings in the response list 
+    for i in range(len(img_path_list)):
+        if not response_list[i][img_path_list[i]]['is_empty']:
+            if isinstance(model_name, list):
+                for single_model_name in model_name:
+                    start_idx = response_list[i][img_path_list[i]]["model_start_end_index"][0]
+                    end_idx = response_list[i][img_path_list[i]]["model_start_end_index"][1]
+                    if start_idx == end_idx:
+                        response_list[i][img_path_list[i]][f"{single_model_name}_emb_vec"] = model_preds[single_model_name][start_idx:end_idx + 1]
+                    else:
+                        response_list[i][img_path_list[i]][f"{single_model_name}_emb_vec"] = model_preds[single_model_name][start_idx:end_idx + 1]
+            else:
+                start_idx = response_list[i][img_path_list[i]]["model_start_end_index"][0]
+                end_idx = response_list[i][img_path_list[i]]["model_start_end_index"][1]
+                if start_idx == end_idx :
+                    response_list[i][img_path_list[i]][f"{model_name}_emb_vec"] = model_preds[start_idx]
+                else:
+                    response_list[i][img_path_list[i]][f"{model_name}_emb_vec"] = model_preds[start_idx:end_idx + 1]
+    return response_list   
 
 
 def stream(
